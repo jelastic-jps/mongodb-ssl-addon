@@ -1,0 +1,48 @@
+type: install
+jpsVersion: 6.1.1
+logo: /images/mongo-ssl-addon.svg
+name: MongoDB Encrypted Connection
+id: mongo-based-ssl
+targetEditions: any
+categories:
+  - apps/dev-and-admin-tools
+description: Enforce DB Connection to use SSL/TLS in MongoDB cluster/standalone. Certificate folder /var/lib/jelastic/keys/SSL-TLS.
+baseUrl: https://raw.githubusercontent.com/jelastic-jps/mongodb-ssl-addon/main
+
+targetNodes:
+  nodeType:
+    - mongodb-dockerized
+    - mongo
+    - mongo6
+    - mongo7
+
+settings:
+  fields:
+    - type: list
+      name: envName
+      caption: Environment
+      required: true
+      values: []
+
+    - type: list
+      name: nodeGroups
+      caption: Node Group(s)
+      required: true
+      multiSelect: true
+      dependsOn:
+        envName: {}
+
+onBeforeInit: scripts/onBeforeInit.js
+
+onInstall:
+  - install [${settings.nodeGroups}]:
+      envName: ${settings.envName}
+      jps: logic.jps?_r=${fn.random}
+      settings:
+        nodeGroups: ${settings.nodeGroups}
+        envName: ${settings.envName}
+        
+success:
+  email: false
+  text: |
+    Your SSL/TLS Encrypted Connection for MongoDB application has been successfully deployed to ${settings.envName} (target layers: ${settings.nodeGroups}). The same port is used for encrypted and non-encrypted connections (27017 by default).

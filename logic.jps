@@ -1,0 +1,288 @@
+type: update
+jpsVersion: 6.1.1
+logo: /images/mongo-ssl-addon.svg
+name: SSL/TLS Encrypted Connection
+id: mongodb-based-ssl
+targetEditions: any
+description: Enforce DB Connection to use SSL/TLS on MongoDB (both Standalone and Replica Set). Certificate folder /var/lib/jelastic/keys/SSL-TLS
+baseUrl: https://raw.githubusercontent.com/jelastic-jps/mongodb-ssl-addon/main
+
+targetNodes:
+  nodeType:
+    - mongodb-dockerized
+    - mongodb
+    - mongo
+    - mongo6
+    - mongo7
+    
+globals:
+  mongoConfig: /etc/mongod.conf
+  mongoExpressConfig: /usr/lib/node_modules/mongo-express/config.default.js
+  certFolder: /var/lib/jelastic/keys/SSL-TLS
+  keyPass: ${fn.password}
+
+onInstall:
+  - installCertsOnEnv
+
+onUninstall:
+  - disableSSL
+
+onAfterRedeployContainer[${targetNodes.nodeGroup}]:
+  - if (!${event.params.useExistingVolumes:true}):
+     - turnOnSSLForNodes:
+         nodesToEnableSSL: ${targetNodes.nodeGroup}
+      
+onAfterServiceScaleOut[${targetNodes.nodeGroup}]:
+  - updateUtils
+  - cmd[${targetNodes.nodeGroup}]: |-
+      mkdir -p /var/lib/jelastic/keys/SSL-TLS/server/
+      grep -q  "${globals.certFolder}" /etc/jelastic/redeploy.conf || echo "${globals.certFolder}" >> /etc/jelastic/redeploy.conf
+    user: root
+  - getMasterId
+  - cmd[${globals.masterId}]: copyCert getCert ${globals.certFolder}/server/root.crt
+  - setGlobals:
+      rootCaCert: ${response.out}
+  - cmd[${globals.masterId}]: copyCert getCert ${globals.certFolder}/server/root.key
+  - setGlobals:
+      rootCaKey: ${response.out}
+  - uploadCertsAndKeys:
+      newNodes: ${event.response.nodes.join(id,)}
+  - addCertsForNewNodes
+  - fixCertOwnPerm
+  - enableSSL:
+      affectedNodes: ${event.response.nodes.join(id,)}
+
+onAfterClone:
+  - script: return {result:0, jps:MANIFEST};
+  - install [${settings.nodeGroups}]:
+      envName: ${event.response.env.envName}
+      jps: ${response.jps}
+      settings:        
+        nodeGroups: ${settings.nodeGroups}
+        envName: ${settings.envName}
+        clone: true
+
+onAfterMigrate:
+  - reGenerateCerts
+
+buttons:
+  - confirmText: Do you want to reissue the SSL certificates (root, server and client) and keys (root, server and client)? Service restart will be done. All the already existing certificates (including CA) will be erased, client certificate will be generated only for user "admin".
+    loadingText: Reissuing all certificates and keys...
+    action: reGenerateCerts
+    caption: Renew all certs
+    successText: All the certificates and keys are reissued successfully
+  - confirmText: Do you want to reissue the SSL certificates and key (only server, root and client are not renewed)? Service restart will be done.
+    loadingText: Reissuing the certificates...
+    action: reGenerateServerCerts
+    caption: Renew server certs
+    successText: Server certificates and keys are reissued successfully
+  - confirmText: Do you want to reissue the SSL certificates and key (only client, root and server are not renewed)? Service restart will be done. (Client certificate term of validity is 1 year)
+    loadingText: Reissuing the certificates...
+    action: reGenerateClientCerts
+    caption: Renew client certs
+    successText: Client certificates and keys are reissued successfully
+
+actions:
+  installCertsOnEnv:
+    - checkApplication
+    - getMasterId
+    - env.control.AddContainerEnvVars[${targetNodes.nodeGroup}]:
+        vars: {"KEY_PASS":"${globals.keyPass}"}
+    - if (${settings.clone:false}):
+      - cmd[${targetNodes.nodeGroup}]: rm -rf ${globals.certFolder}/*
+        user: root
+    - updateUtils
+    - cmd[${targetNodes.nodeGroup}]: |-
+        mkdir -p ${globals.certFolder}/server/
+      user: root
+    - turnOnSSLForNodes:
+        nodesToEnableSSL: ${globals.masterId}
+    - if (nodes.${targetNodes.nodeGroup}.length > 1):
+        - cmd[${globals.masterId}]: |-
+            rm -rf ${globals.certFolder}/server/server.*
+          user: root
+        - cmd[${globals.masterId}]: copyCert getCert ${globals.certFolder}/server/root.crt
+        - setGlobals:
+            rootCaCert: ${response.out}
+        - cmd[${globals.masterId}]: copyCert getCert ${globals.certFolder}/server/root.key
+        - setGlobals:
+            rootCaKey: ${response.out}
+        - uploadCertsAndKeys:
+            newNodes: ${targetNodes.nodeGroup}
+        - cmd[${targetNodes.nodeGroup}]: |-
+            chown 700:700 ${globals.certFolder}/*
+          user: root
+        - turnOnSSLForNodes:
+            nodesToEnableSSL: ${targetNodes.nodeGroup}
+
+  uploadCertsAndKeys:
+    - cmd[${this.newNodes}]: |-
+        copyCert uploadCert ${globals.certFolder}/root.key '${globals.rootCaKey}'
+        copyCert uploadCert ${globals.certFolder}/root.crt '${globals.rootCaCert}'
+      user: root
+
+  reGenerateCerts:
+    - forEach(nodes.${targetNodes.nodeGroup}):
+      - cmd[${@i.id}]: jem service stop
+        user: root
+    - cmd[${targetNodes.nodeGroup}]: |-
+        rm -rf ${globals.certFolder}/*;
+      user: root
+    - installCertsOnEnv
+    - cmd[${@i.id}]: jem service start
+      user: root
+
+  reGenerateServerCerts:
+    - forEach(nodes.${targetNodes.nodeGroup}):
+      - cmd[${@i.id}]: jem service stop
+        user: root
+    - cmd[${targetNodes.nodeGroup}]: |-
+        mv ${globals.certFolder}/server/root.* ${globals.certFolder}/;
+        rm -f ${globals.certFolder}/server/server.*
+        selfcertgen admin ${env.domain} ${targetNodes.nodeGroup}
+        mv -f ${globals.certFolder}/client/client.* ${globals.certFolder}/;
+      user: root
+    - moveCertsToDirs:
+        affectedNodes: ${targetNodes.nodeGroup}
+    - cmd[${@i.id}]: jem service start
+      user: root
+
+  reGenerateClientCerts:
+    - forEach(nodes.${targetNodes.nodeGroup}):
+      - cmd[${@i.id}]: jem service stop
+        user: root
+    - cmd[${targetNodes.nodeGroup}]: |-
+        mv -f ${globals.certFolder}/server/* ${globals.certFolder}/;
+        selfcertgen admin ${env.domain} ${targetNodes.nodeGroup}
+      user: root
+    - moveCertsToDirs:
+        affectedNodes: ${targetNodes.nodeGroup}
+    - cmd[${@i.id}]: jem service start
+      user: root
+
+  getMasterId:
+    - forEach(nodes.${targetNodes.nodeGroup}):
+      - cmd[${@i.id}]: |- 
+          source /.jelenv;  
+          echo ${MASTER_ID};
+      - setGlobals:
+          masterId: ${response.out}
+
+  moveCertsToDirs:
+    - cmd[${this.affectedNodes}]: |-
+        rm -rf ${globals.certFolder}/client; mkdir -p ${globals.certFolder}/client;
+        rm -rf ${globals.certFolder}/server; mkdir -p ${globals.certFolder}/server;
+        chown -R 700:700 ${globals.certFolder}/*
+        rm -f ${globals.certFolder}/client.csr ${globals.certFolder}/server.csr ${globals.certFolder}/client-req.pem ${globals.certFolder}/server-req.pem
+        for i in root.crt root.key server.crt server.key root.srl server.pem root.pem
+        do
+            [ -f ${globals.certFolder}/${i} ] && mv -f ${globals.certFolder}/${i} ${globals.certFolder}/server/${i}
+        done
+        for i in client.crt client.key client.pem
+        do
+            [ -f ${globals.certFolder}/${i} ] && mv -f ${globals.certFolder}/${i} ${globals.certFolder}/client/${i}
+        done
+        ln -sfT ${globals.certFolder}/server/root.crt ${globals.certFolder}/client/root.crt
+        ln -sfT ${globals.certFolder}/server/root.pem ${globals.certFolder}/client/root.pem
+      user: root
+
+  generateCerts:
+    - updateUtils
+    - cmd[${this.affectedNodes}]: |-
+        selfcertgen admin ${env.domain} ${targetNodes.nodeGroup};
+        chown -R 700:700 ${globals.certFolder}; chmod 600 ${globals.certFolder}/*
+      user: root
+    - moveCertsToDirs:
+        affectedNodes: ${this.affectedNodes}
+
+  enableSSL:
+    - cmd[${this.affectedNodes}]: |-
+        grep -q  "${globals.certFolder}" /etc/jelastic/redeploy.conf || echo "${globals.certFolder}" >> /etc/jelastic/redeploy.conf
+        yum -y install https://dl.cloudsmith.io/public/cloudposse/packages/rpm/any-distro/any-version/x86_64/yq_4.11.2-1_x86_64.rpm
+        if [ -e ${globals.mongoConfig} ]; then
+            yq eval -i '.net.tls.mode = "allowTLS"' ${globals.mongoConfig}
+            yq eval -i '.net.tls.certificateKeyFile = "${globals.certFolder}/server/server.pem"' ${globals.mongoConfig}
+            yq eval -i '.net.tls.CAFile = "${globals.certFolder}/server/root.pem"' ${globals.mongoConfig}
+            yq eval -i '.net.tls.allowConnectionsWithoutCertificates = true' ${globals.mongoConfig}
+        fi
+        if [ -e ${globals.mongoExpressConfig} ]; then
+            sed -ci -e "s/^[[:space:]]*ssl[[:space:]]*:.*/      ssl: true,/" ${globals.mongoExpressConfig}
+            sed -ci -e "s/^[[:space:]]*sslValidate[[:space:]]*:.*/      sslValidate: false,/" ${globals.mongoExpressConfig}
+        fi
+        systemctl reset-failed
+      user: root
+    - restartNodes:
+        nodeGroup: ${targetNodes.nodeGroup}
+        isSequential: false
+  
+  disableSSL:
+    - cmd[${targetNodes.nodeGroup}]: |-
+        if [ -e ${globals.mongoConfig} ]; then
+            yq eval -i 'del(.net.tls.mode)' ${globals.mongoConfig} 
+            yq eval -i 'del(.net.tls.PEMKeyFile)' ${globals.mongoConfig} 
+            yq eval -i 'del(.net.tls.CAFile)' ${globals.mongoConfig} 
+            yq eval -i 'del(.net.tls)' ${globals.mongoConfig} 
+        fi
+        if [ -e ${globals.mongoExpressConfig} ]; then
+            sed -ci -e "s/^[[:space:]]*ssl[[:space:]]*:.*/      ssl: false,/" ${globals.mongoExpressConfig}
+        fi
+        for i in client.crt client.key root.crt root.pem 
+        do
+            rm -f /var/lib/jelastic/keys/SSL-TLS/client/${i}
+        done
+        for i in root.crt root.srl server.crt server.key server.pem root.pem
+        do
+            rm -f /var/lib/jelastic/keys/SSL-TLS/server/${i}
+        done
+        sed -ci -e '/\/var\/lib\/jelastic\/keys\/SSL-TLS/d' /etc/jelastic/redeploy.conf
+        for i in client server
+        do
+            if [ -z "$(ls -A /var/lib/jelastic/keys/SSL-TLS/${i})" ]; then
+                rm -rf /var/lib/jelastic/keys/SSL-TLS/${i}
+            fi
+        done
+        systemctl reset-failed
+      user: root
+    - restartNodes:
+        nodeGroup: ${targetNodes.nodeGroup}
+        isSequential: false
+
+  addCertsForNewNodes:
+    - turnOnSSLForNodes:
+        nodesToEnableSSL: ${event.response.nodes.join(id,)}
+
+  checkAppVersion:
+    - cmd[${this.masternode}]: |-
+        wget -O /root/check_app_new.sh ${baseUrl}/scripts/check_app.sh?_r=${fn.random} && \
+        mv -f /root/check_app_new.sh /root/check_app.sh && \
+        bash /root/check_app.sh;
+      user: root
+
+  fixCertOwnPerm:
+    - cmd[${targetNodes.nodeGroup}]: |-
+        chown -R 700:700 ${globals.certFolder}
+      user: root
+        
+  turnOnSSLForNodes:
+    - generateCerts: 
+        affectedNodes: ${this.nodesToEnableSSL}
+    - enableSSL:
+        affectedNodes: ${this.nodesToEnableSSL}
+
+  checkApplication:
+    - checkAppVersion:
+        masternode: ${targetNodes.nodeGroup}
+    - if (response.out == "Non-supported"):
+      - stopEvent:
+          type: warning
+          message: Database version is not supported.
+
+  updateUtils:
+    - cmd[${targetNodes.nodeGroup}]: |-
+        wget -O /usr/local/sbin/selfcertgen_new ${baseUrl}/scripts/selfcertgen?_r=${fn.random} && \
+        wget -O /usr/local/sbin/copyCert_new ${baseUrl}/scripts/copyCert?_r=${fn.random} && \
+        mv -f /usr/local/sbin/selfcertgen_new /usr/local/sbin/selfcertgen && \
+        mv -f /usr/local/sbin/copyCert_new /usr/local/sbin/copyCert && \
+        chmod +x /usr/local/sbin/selfcertgen /usr/local/sbin/copyCert && \
+        chown -R 700:700 /usr/local/sbin/selfcertgen
+      user: root
