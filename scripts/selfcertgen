@@ -54,6 +54,7 @@ if [ ! -f ${CERT_DIR}/server.crt ]; then
 echo "subjectAltName = @alt_names
 
 [alt_names]
+DNS.1 = ${KEY_HOST} 
 IP.1 = ${ALTNAME}" > ~/altname.ext
     if [ ! -f ${CERT_DIR}/server/server.crt ]; then
         RANDFILE=/tmp/.random openssl req -newkey rsa:2048 -days 3650 -nodes -subj "/C=$KEY_COUNTRY/ST=$KEY_PROVINCE/L=$KEY_CITY/O=$KEY_ORG/OU=Server/CN=${KEY_HOST}" -keyout ${CERT_DIR}/server.key > ${CERT_DIR}/server-req.pem
