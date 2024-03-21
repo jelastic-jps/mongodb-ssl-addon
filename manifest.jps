@@ -11,7 +11,6 @@ baseUrl: https://raw.githubusercontent.com/jelastic-jps/mongodb-ssl-addon/main
 
 targetNodes:
   nodeType:
-    - mongodb-dockerized
     - mongo
     - mongo6
     - mongo7
