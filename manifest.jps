@@ -7,7 +7,7 @@ targetEditions: any
 categories:
   - apps/dev-and-admin-tools
 description: Enforce DB Connection to use SSL/TLS in MongoDB cluster/standalone. Certificate folder /var/lib/jelastic/keys/SSL-TLS.
-baseUrl: https://raw.githubusercontent.com/jelastic-jps/mongodb-ssl-addon/main
+baseUrl: https://raw.githubusercontent.com/dimkadt/mongodb-ssl-addon/main
 
 targetNodes:
   nodeType:
