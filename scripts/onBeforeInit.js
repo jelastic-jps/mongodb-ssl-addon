@@ -18,7 +18,7 @@ for (var i = 0, envInfo, env; envInfo = resp.infos[i]; i++) {
 
       if (node.nodeType.indexOf('mongo') > -1) {
       var nodeMajorVersion = stackVersion.split(".")[0];
-        if (!nodes[env.envName].groups[node.nodeGroup]) {
+        if (!nodes[env.envName].groups[node.nodeGroup] && parseInt(nodeMajorVersion, 10) > 5) {
           nodes[env.envName].push({
             value: node.nodeGroup,
             caption: node.name + ' (' + node.nodeGroup + ')'
